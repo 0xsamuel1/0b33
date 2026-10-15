@@ -239,5 +239,7 @@ jobs:
         run: cargo audit
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
+      - name: Check prohibited license families
+        run: python3 scripts/check-license-policy.py
       - name: Run cargo deny
         run: cargo deny check
