@@ -252,6 +252,48 @@ pub fn do_execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
         return Err(Error::InvalidInput);
     }
 
+    // ── Guard against re-initialization via governance proposals ─────────
+    //
+    // Prevent re-initialization attacks by checking if the contract is already
+    // initialized (Admin key exists). If initialized, reject any proposal that
+    // would write to initialization-critical keys set by do_init:
+    // - DataKey::Token (primary token address)
+    // - DataKey::MinTopup (minimum top-up threshold)
+    // - DataKey::GracePeriod (grace period duration)
+    //
+    // This guards against future ProposalKind variants (e.g., UpdateConfig)
+    // that might attempt to bypass the initialization guard in do_init by
+    // directly writing to storage without calling do_init.
+    //
+    // SECURITY CRITICAL: When adding a new ProposalKind variant, you MUST review
+    // whether it writes to any of the initialization-critical keys above. If it
+    // does, it MUST be added to the rejection check below. DataKey::Admin can
+    // be safely updated via RotateAdmin as it's an intentional rotation, not
+    // re-initialization.
+    if crate::admin::has_config(env, &DataKey::Admin) {
+        // Contract is already initialized - check if this proposal would
+        // modify initialization-critical keys
+        //
+        // Current proposal kinds that are SAFE (do not modify init keys):
+        // - RotateAdmin: Updates Admin, which is a rotation, not re-init
+        // - SetProtocolFee: Updates FeeBps and Treasury, not init keys
+        // - EmergencyStop: Updates EmergencyStop flag, not init keys
+        // - RecoverStrandedFunds: Transfers funds, doesn't touch init keys
+        // - AddAcceptedToken: Adds to token list, doesn't touch DataKey::Token
+        // - RemoveAcceptedToken: Removes from token list, doesn't touch DataKey::Token
+        //
+        // FUTURE: If adding ProposalKind::UpdateConfig or similar that writes to
+        // DataKey::Token, DataKey::MinTopup, or DataKey::GracePeriod, add it here:
+        let writes_to_init_keys = matches!(proposal.kind,
+            // ProposalKind::UpdateConfig => true,  // FUTURE: Add if needed
+            false  // Currently no proposal kind writes to init keys
+        );
+        
+        if writes_to_init_keys {
+            return Err(Error::AlreadyInitialized);
+        }
+    }
+
     // Execute the proposal
     match proposal.kind {
         ProposalKind::RotateAdmin => {
@@ -266,6 +308,20 @@ pub fn do_execute_proposal(env: &Env, proposal_id: u64) -> Result<(), Error> {
         ProposalKind::UpgradeContract => {
             // Reserved for future use
             return Err(Error::InvalidInput);
+        }
+        ProposalKind::EmergencyStop => {
+            let enabled = proposal.target3 != 0;
+            crate::admin::write_config(env, &DataKey::EmergencyStop, &enabled);
+        }
+        ProposalKind::RecoverStrandedFunds => {
+            // Recovery is handled by the caller - this just validates the proposal
+            // The actual recovery happens in do_recover_stranded_funds
+        }
+        ProposalKind::AddAcceptedToken => {
+            // Token addition is handled by the caller
+        }
+        ProposalKind::RemoveAcceptedToken => {
+            // Token removal is handled by the caller
         }
     }
 
