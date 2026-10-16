@@ -8,6 +8,7 @@ use crate::types::{
     AcceptedToken, AdminConfigChangedEvent, AdminProposal, AdminProposalCancelledEvent,
     AdminProposalClaimedEvent, AdminProposalCreatedEvent, AdminRotatedEvent, BatchChargeResult,
     DataKey, Error, FeeTokenConfiguredEvent, PendingTreasuryChange, RecoveryEvent, RecoveryReason,
+    Subscription,
     TreasuryChangeExecutedEvent, TreasuryChangeQueuedEvent, BATCH_MAX_SIZE, TOPIC_RECOVERY, SUB_TTL_EXTEND_TO,
     SUB_TTL_THRESHOLD,
 };
@@ -683,6 +684,7 @@ pub fn do_rotate_admin(
     // Atomic swap: write new admin before emitting the event so any indexer
     // that reads state on the event sees the already-updated value.
     write_config(env, &DataKey::Admin, &new_admin);
+    crate::governance::invalidate_pending_proposals(env);
 
     // Mark the multi-sig proposal as consumed
     consume_multisig_proposal(env, proposal_id)?;
@@ -1040,6 +1042,7 @@ pub fn do_claim_admin_role(env: &Env, claimant: Address) -> Result<(), Error> {
 
     storage.remove(&proposal_key(env));
     write_config(env, &DataKey::Admin, &claimant);
+    crate::governance::invalidate_pending_proposals(env);
 
     env.events().publish(
         (Symbol::new(env, "admin_proposal_claimed"),),
@@ -1254,6 +1257,7 @@ pub fn migrate_config_to_persistent(env: &Env, admin: Address) -> Result<(), Err
     }
 
     do_migrate_config_to_persistent_internal(env)?;
+    verify_migration(env, 3)?;
 
     env.events().publish(
         (Symbol::new(env, "schema_migrated"),),
@@ -1265,6 +1269,63 @@ pub fn migrate_config_to_persistent(env: &Env, admin: Address) -> Result<(), Err
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
         },
     );
+
+    Ok(())
+}
+
+fn verify_migration(env: &Env, expected_version: u32) -> Result<(), Error> {
+    let storage = env.storage();
+    let schema_is_persistent = storage
+        .persistent()
+        .get::<_, u32>(&DataKey::SchemaVersion)
+        == Some(expected_version);
+    let schema_is_instance = storage
+        .instance()
+        .get::<_, u32>(&DataKey::SchemaVersion)
+        == Some(expected_version);
+
+    if get_schema_version(env) != expected_version
+        || (expected_version >= 3 && (!schema_is_persistent || schema_is_instance))
+        || (expected_version < 3 && (!schema_is_instance || schema_is_persistent))
+    {
+        return Err(Error::SchemaMigrationVerificationFailed);
+    }
+
+    if expected_version >= 3 {
+        for key in [
+            DataKey::Token,
+            DataKey::Admin,
+            DataKey::MinTopup,
+            DataKey::GracePeriod,
+            DataKey::NextId,
+            DataKey::EmergencyStop,
+            DataKey::Treasury,
+            DataKey::FeeBps,
+            DataKey::Operator,
+        ] {
+            if storage.instance().has(&key) {
+                return Err(Error::SchemaMigrationVerificationFailed);
+            }
+        }
+
+        let next_id: u32 = read_config(env, &DataKey::NextId).unwrap_or(0);
+        if next_id > 0 {
+            for id in [0, next_id / 2, next_id - 1] {
+                if let Some(sub) = storage
+                    .persistent()
+                    .get::<_, Subscription>(&DataKey::Sub(id))
+                {
+                    if sub.amount <= 0
+                        || sub.interval_seconds == 0
+                        || sub.prepaid_balance < 0
+                        || sub.lifetime_charged < 0
+                    {
+                        return Err(Error::SchemaMigrationVerificationFailed);
+                    }
+                }
+            }
+        }
+    }
 
     Ok(())
 }
@@ -1338,6 +1399,8 @@ pub fn do_migrate(
             .instance()
             .set(&crate::types::DataKey::SchemaVersion, &binary_version);
     }
+
+    verify_migration(env, binary_version)?;
 
     env.events().publish(
         (soroban_sdk::Symbol::new(env, "schema_migrated"),),
