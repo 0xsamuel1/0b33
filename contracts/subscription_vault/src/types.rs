@@ -1094,6 +1094,8 @@ pub enum Error {
     SchemaMigrationDowngrade = 9101,
     /// Stored schema version does not match the code's expected version; migration rejected.
     SchemaVersionMismatch = 9102,
+    /// Post-migration storage invariants did not pass verification.
+    SchemaMigrationVerificationFailed = 9103,
 
     // --- Dispute / Chargeback (10000-10099) ---
     /// The requested dispute was not found.
@@ -1156,6 +1158,8 @@ pub enum Error {
     NoActiveProposal = 14005,
     /// The admin proposal cooldown has not elapsed yet.
     ProposalCooldownActive = 14006,
+    /// The proposal predates the most recent admin rotation.
+    ProposalInvalidated = 14007,
 
     // --- Cancellation Escrow (13000-13099) ---
     /// No cancellation escrow found for this subscription.

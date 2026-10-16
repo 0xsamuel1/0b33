@@ -1184,6 +1184,7 @@ fn apply_cancellation(
         env.storage()
             .persistent()
             .set(&DataKey::CancellationEscrow(subscription_id), &escrow);
+        extend_subscription_ttl(env, &DataKey::CancellationEscrow(subscription_id));
 
         env.events().publish(
             (Symbol::new(env, "cancellation_escrow_opened"), subscription_id),
@@ -2655,6 +2656,8 @@ pub fn do_withdraw_subscriber_funds(
             if subscriber != escrow.subscriber {
                 return Err(Error::Forbidden);
             }
+
+            extend_subscription_ttl(env, &DataKey::CancellationEscrow(subscription_id));
             
             let now = env.ledger().timestamp();
             if now < escrow.released_at {

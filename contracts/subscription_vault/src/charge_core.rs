@@ -1558,37 +1558,25 @@ pub fn calculate_prorated_first_charge(
         return Ok(amount);
     }
     
-    // Compute (amount * remaining_seconds) / interval safely
-    // Strategy: Check if we can do the multiplication in i128 first
-    // If not, use u128 for intermediate calculation
-    
-    // First try direct i128 multiplication to be efficient for small values
-    match amount.checked_mul(remaining_seconds as i128) {
-        Some(product) => {
-            // Multiplication succeeded, safe to divide
-            let prorated = product / interval as i128;
-            Ok(prorated.min(amount))
-        }
-        None => {
-            // Multiplication would overflow i128
-            // Use u128 for intermediate calculation
-            // amount is i128, convert to u128 (it's non-negative)
-            let amount_u128 = amount as u128;
-            let remaining_u128 = remaining_seconds as u128;
-            let interval_u128 = interval as u128;
-            
-            let product_u128 = amount_u128
-                .checked_mul(remaining_u128)
-                .ok_or(Error::InvalidAmount)?;
-            
-            let prorated_u128 = product_u128 / interval_u128;
-            
-            // Convert back to i128 (should not overflow since result <= amount < i128::MAX)
-            if prorated_u128 > i128::MAX as u128 {
-                Err(Error::InvalidAmount)
-            } else {
-                Ok((prorated_u128 as i128).min(amount))
-            }
-        }
-    }
+    // Split amount into quotient and remainder so neither intermediate product
+    // scales with the full i128 amount:
+    // (amount * remaining) / interval
+    // = (amount / interval) * remaining
+    //   + ((amount % interval) * remaining) / interval.
+    let interval_i128 = interval as i128;
+    let remaining_i128 = remaining_seconds as i128;
+    let whole_product = (amount / interval_i128)
+        .checked_mul(remaining_i128)
+        .ok_or(Error::Overflow)?;
+
+    // Both factors are less than interval (a u64), so this product fits u128.
+    let fractional_product = ((amount % interval_i128) as u128)
+        .checked_mul(remaining_seconds as u128)
+        .ok_or(Error::Overflow)?;
+    let fractional = (fractional_product / interval as u128) as i128;
+
+    let prorated = whole_product
+        .checked_add(fractional)
+        .ok_or(Error::Overflow)?;
+    Ok(prorated.min(amount))
 }
