@@ -55,6 +55,8 @@ mod test_datakey_layout;
 mod test_merchant_tags;
 #[cfg(test)]
 mod test_billing_period_snapshots;
+#[cfg(test)]
+mod test_governance;
 mod types;
 mod validation;
 
