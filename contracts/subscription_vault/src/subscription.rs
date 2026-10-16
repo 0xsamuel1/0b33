@@ -75,6 +75,7 @@ use crate::types::{
     SubscriptionRecoveryReadyEvent, SubscriptionStatus, UsageLimits, UsageLimitsConfiguredEvent,
     TOPIC_CAP_REACH, TOPIC_CHARGED, TOPIC_CREATED, TOPIC_DEPOSITED, TOPIC_ONE_OFF_CHARGED,
     BATCH_MAX_SIZE, SUB_TTL_EXTEND_TO, SUB_TTL_THRESHOLD,
+    CANCELLATION_ESCROW_WINDOW_SECS,
 };
 use soroban_sdk::{Address, Env, Symbol, Vec};
 
@@ -2569,6 +2570,9 @@ pub fn do_finalize_emergency_withdraw(
             amount: amount_to_refund,
             timestamp: now,
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
+            // `subscriber.require_auth()` + the `subscriber == sub.subscriber`
+            // check above already pinned this call to the subscriber path.
+            initiator_role: crate::types::RecoveryInitiatorRole::Subscriber,
         },
     );
 
@@ -2739,6 +2743,9 @@ pub fn do_withdraw_subscriber_funds(
             amount: amount_to_refund,
             timestamp: env.ledger().timestamp(),
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
+            // `subscriber.require_auth()` + the `subscriber == sub.subscriber`
+            // check above already pinned this call to the subscriber path.
+            initiator_role: crate::types::RecoveryInitiatorRole::Subscriber,
         },
     );
 

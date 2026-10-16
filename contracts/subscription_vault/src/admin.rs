@@ -7,7 +7,8 @@
 use crate::types::{
     AcceptedToken, AdminConfigChangedEvent, AdminProposal, AdminProposalCancelledEvent,
     AdminProposalClaimedEvent, AdminProposalCreatedEvent, AdminRotatedEvent, BatchChargeResult,
-    DataKey, Error, FeeTokenConfiguredEvent, PendingTreasuryChange, RecoveryEvent, RecoveryReason,
+    DataKey, Error, FeeTokenConfiguredEvent, PendingTreasuryChange, RecoveryEvent,
+    RecoveryInitiatorRole, RecoveryReason,
     SchemaMigrationSummary, TreasuryChangeExecutedEvent, TreasuryChangeQueuedEvent, BATCH_MAX_SIZE,
     TOPIC_RECOVERY, SUB_TTL_EXTEND_TO, SUB_TTL_THRESHOLD,
     Subscription,
@@ -785,6 +786,9 @@ pub fn do_recover_stranded_funds(
         reason,
         timestamp: env.ledger().timestamp(),
         schema_version: crate::types::EVENT_SCHEMA_VERSION,
+        // `require_admin_auth` above already pinned this call to the admin
+        // path, so the role is emitted rather than derived from caller input.
+        initiator_role: RecoveryInitiatorRole::Admin,
     };
 
     env.events().publish(

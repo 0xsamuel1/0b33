@@ -81,6 +81,57 @@ withdrawal or redirect an accounted balance to a new address.
    increased and, for a prepaid-balance withdrawal, confirm the balance is now
    zero. Retain the transaction hash and event data.
 
+### Identifying stranded subscriptions (`list_recoverable_subscriptions`)
+
+There is no secondary index of cancelled subscriptions — `apply_cancellation`
+removes the id from `MerchantSubs`, `TokenSubs` and `SubscriberSubs` — so
+finding them requires an id-range scan. The contract exposes that scan as a
+view:
+
+```rust
+list_recoverable_subscriptions(
+    cursor: Option<u32>,
+    limit: u32,
+) -> RecoverableSubscriptionsPage
+
+pub struct RecoverableSubscriptionsPage {
+    pub subscriptions: Vec<RecoverableSubscription>, // id, subscriber, merchant, token, prepaid_balance
+    pub next_cursor: Option<u32>,
+}
+```
+
+A subscription is reported when **`status == Cancelled` and
+`prepaid_balance > 0`**. `cursor` is an inclusive lower bound on the
+subscription id (`None` starts at `0`); `limit` must be in
+`1..=MAX_QUERY_RESULTS` or the call fails with `Error::InvalidExportLimit`.
+Results are ascending by id, and each call inspects at most `MAX_SCAN_DEPTH`
+ids. Continue from `next_cursor` while it is `Some`; when it is `None` the scan
+reached the end of the id space, so an empty page with `None` means nothing is
+stranded.
+
+Note the distinction from `list_subscriptions_by_subscriber`: that one reads a
+per-subscriber index and cannot see a cancelled subscription at all, because
+the id has already been removed from the index.
+
+**What a hit means.** In the normal flow `cancel_subscription` zeroes
+`prepaid_balance` and moves the amount into `DataKey::CancellationEscrow`, so a
+match indicates money that reached a cancelled record outside that path:
+
+- a **delegated-payer deposit** (`deposit_funds_on_behalf`) that lands after
+  cancellation, since that path does not gate on `Cancelled`;
+- a record restored from a snapshot export whose escrow accounting was not
+  reproduced by the restore;
+- state migrated from an older storage schema.
+
+**What a hit does not mean.** This query is a reporting and forensics aid. It
+confers no right to move the funds. `recover_stranded_funds` remains
+structurally incapable of touching an accounted balance, and the legitimate
+route for a cancelled subscription's money is still the
+subscriber-authenticated `withdraw_subscriber_funds`. A cancelled subscription
+has no `uncancel` path either — `Cancelled` may only transition to `Archived`.
+
+---
+
 ## Recovery Scenarios
 
 ### Valid Use Cases
@@ -640,11 +691,21 @@ Used responsibly with strong governance, recovery can save genuinely stranded fu
 - Cancellation semantics: `docs/cancellation.md`
 - Reconciling balances: `docs/reconciliation_strategy.md`
 - Admin recovery function: `recover_stranded_funds()`
+- Stranded-subscription query: `list_recoverable_subscriptions()`
 - Recovery event type: `RecoveryEvent`
+- Recovery initiator label: `RecoveryInitiatorRole` enum
 - Recovery reasons: `RecoveryReason` enum
 
 ## Changelog
 
+- 2026-10-16: Added `list_recoverable_subscriptions` (#438) — surfaces
+  subscriptions stranded in `Cancelled` status with a non-zero
+  `prepaid_balance`, paginated by cursor. Reporting/forensics only; it grants
+  no right to move funds.
+- 2026-10-16: Added `initiator_role` to `RecoveryEvent` and
+  `SubscriberWithdrawalEvent` (#437) — event schema v4. Lets auditors tell the
+  admin recovery path from the subscriber withdrawal path when reading a single
+  stream of recovery events. Values are pinned by authorization, not input.
 - 2026-02-21: Initial documentation for admin recovery feature
 - 2026-09-25: Added **Recovery after subscription cancellation** — normative
   statement that a `Cancelled` subscription's funds are not admin-recoverable,
