@@ -120,7 +120,7 @@ changes the outcome of a recovery attempt.
 | 1. `Active` with a prepaid balance | `Subscription.prepaid_balance` | Yes | **No** | Normal billing. |
 | 2. `cancel_subscription` succeeds | Zeroed on the record, moved to `DataKey::CancellationEscrow(subscription_id)` | **Yes** (escrowed, not yet transferred) | **No** | Wait out the dispute window. Nothing to recover. |
 | 3. Escrow window elapsed, subscriber withdraws | Transferred to the subscriber; `sub_total_accounted` decremented | No | n/a — balance left the contract | Done. |
-| 4. Escrow window elapsed, subscriber never withdraws | Still in `CancellationEscrow` | **Yes** | **No** | Subscriber must call `withdraw_subscriber_funds`. Admin cannot. |
+| 4. Escrow window elapsed, subscriber never withdraws | Still in `CancellationEscrow` | **Yes** | **No** | Subscriber calls `withdraw_subscriber_funds` or `claim_cancellation_escrow`. The subscriber-authenticated claim refreshes the escrow TTL. Admin cannot claim it. |
 
 Note stage 3: the escrow release decrements `total_accounted` at *withdrawal*
 time, not at cancellation time. So cancelling a subscription does not change
