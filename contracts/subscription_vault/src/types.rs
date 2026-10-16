@@ -8,7 +8,7 @@ use soroban_sdk::{
 };
 
 /// Current schema version for contract events.
-pub const EVENT_SCHEMA_VERSION: u32 = 2;
+pub const EVENT_SCHEMA_VERSION: u32 = 3;
 
 /// Maximum number of metadata keys per subscription.
 pub const MAX_METADATA_KEYS: u32 = 10;
@@ -665,6 +665,7 @@ pub struct SplitChargeEvent {
     pub payees: Vec<(Address, i128)>,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 /// Event emitted when a soulbound credential is issued for a new subscription.
@@ -1207,6 +1208,7 @@ pub struct NonceConsumedEvent {
     pub nonce: u64,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -1309,6 +1311,18 @@ pub struct SchemaMigratedEvent {
     pub to_version: u32,
     pub timestamp: u64,
     pub schema_version: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchemaMigrationSummary {
+    pub from_version: u32,
+    pub to_version: u32,
+    pub config_keys_to_migrate: u32,
+    pub subscriptions_for_ledger_expiration: u32,
+    pub subscriptions_for_sub_account_label: u32,
+    pub dry_run: bool,
+    pub would_change: bool,
 }
 
 #[contracttype]
@@ -1669,6 +1683,7 @@ pub struct DiscountAppliedEvent {
     pub timestamp: u64,
     /// Event schema version for backwards-compatible indexer decoding.
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2014,6 +2029,7 @@ pub struct SubscriptionChargedEvent {
     pub period_end: u64,
     pub salt: soroban_sdk::BytesN<32>,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 /// Generic, catch-all failure event emitted by [`crate::charge_core::charge_fail`]
@@ -2029,6 +2045,7 @@ pub struct ChargeFailureEvent {
     pub attempted_amount: i128,
     pub ledger: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -2042,6 +2059,7 @@ pub struct SubscriptionChargeFailedEvent {
     pub resulting_status: SubscriptionStatus,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -2067,6 +2085,7 @@ pub struct SubscriptionCancelledEvent {
     pub refund_amount: i128,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -2158,6 +2177,7 @@ pub struct GracePeriodEnteredEvent {
     pub grace_expires_at: u64,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -2201,6 +2221,7 @@ pub struct SubscriptionExpiredEvent {
     pub subscription_id: u32,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 /// Event emitted when a subscription's ledger-sequence expiration bound is
@@ -2327,6 +2348,7 @@ pub struct LifetimeCapReachedEvent {
     pub lifetime_charged: i128,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
@@ -2623,6 +2645,32 @@ pub struct ProtocolFeeChargedEvent {
     pub treasury: Address,
     pub timestamp: u64,
     pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct FeeConvertedEvent {
+    pub subscription_id: u32,
+    pub source_token: Address,
+    pub target_token: Address,
+    pub original_fee_amount: i128,
+    pub converted_fee_amount: i128,
+    pub rate: u128,
+    pub timestamp: u64,
+    pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SubscriptionAutoPausedEvent {
+    pub subscription_id: u32,
+    pub consecutive_failures: u32,
+    pub threshold: u32,
+    pub timestamp: u64,
+    pub schema_version: u32,
+    pub batch_nonce: Option<u64>,
 }
 
 #[contracttype]
