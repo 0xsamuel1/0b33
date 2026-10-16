@@ -8,7 +8,13 @@ use soroban_sdk::{
 };
 
 /// Current schema version for contract events.
-pub const EVENT_SCHEMA_VERSION: u32 = 3;
+///
+/// Version `4` appends `initiator_role: RecoveryInitiatorRole` to
+/// [`RecoveryEvent`] and [`SubscriberWithdrawalEvent`] so auditors can tell
+/// the admin recovery path from the subscriber withdrawal path (#437). The
+/// field is appended *after* `schema_version` on both events, keeping the
+/// schema-v3 positional prefix intact for existing indexers.
+pub const EVENT_SCHEMA_VERSION: u32 = 4;
 
 /// Maximum number of metadata keys per subscription.
 pub const MAX_METADATA_KEYS: u32 = 10;
@@ -334,6 +340,15 @@ pub enum DataKey {
     SplitPayees(u32),
     /// Emergency-withdraw cooldown lock keyed by subscription ID. Persistent-only.
     EmergencyWithdrawIntent(u32),
+    /// Isolated balance of a merchant sub-account, keyed by
+    /// `(merchant, label)` (instance). Discriminant 80.
+    ///
+    /// Added to restore compilation of `register_sub_account` and
+    /// `withdraw_sub_account_funds`. Appended at the end of the enum so no
+    /// existing discriminant shifts.
+    MerchantSubAccount(Address, Symbol),
+    /// Registered sub-account labels for a merchant (instance). Discriminant 81.
+    MerchantSubAccountList(Address),
 }
 
 impl DataKey {
@@ -424,6 +439,10 @@ impl DataKey {
             DataKey::MerchantFeeBps(_) => 77,
             DataKey::OraclePriceHistoryMeta(_) => 78,
             DataKey::OraclePriceHistoryEntry(_, _) => 79,
+            DataKey::DelegatedPayerGrant(_, _) => 80,
+            DataKey::EmergencyWithdrawIntent(_) => 81,
+            DataKey::MerchantSubAccount(_, _) => 82,
+            DataKey::MerchantSubAccountList(_) => 83,
         }
     }
 
@@ -490,10 +509,15 @@ pub const KNOWN_INSTANCE_KEY_DISCRIMINANTS: &[u32] = &[
     73, // SubscriberActiveCapOverride(Address)
     74, // TagAllowlist
     75, // MerchantTags(Address)
-    76, // FeeToken
-    78, // MerchantFeeBps(Address)
-    79, // OraclePriceHistoryMeta(Address)
-    80, // OraclePriceHistoryEntry(Address, u32)
+    // NOTE: 76 is deliberately absent. Canonical discriminant 76 is
+    // `CancellationEscrow(u32)`, which is persistent-tier; listing it here
+    // contradicted `tests/data_key_feature_groups.rs`, which asserts that
+    // per-subscription record keys stay off the instance allowlist.
+    77, // MerchantFeeBps(Address)
+    78, // OraclePriceHistoryMeta(Address)
+    79, // OraclePriceHistoryEntry(Address, u32)
+    82, // MerchantSubAccount(Address, Symbol)
+    83, // MerchantSubAccountList(Address)
 ];
 
 /// Returns `true` if `discriminant` is a recognised instance-storage key.
@@ -657,6 +681,84 @@ pub struct SplitPayees {
     pub entries: Vec<(Address, u32)>,
 }
 
+// ── Subscription transfer ───────────────────────────────────────────────────
+
+/// A pending request to move a subscription from one subscriber to another.
+///
+/// Stored under `DataKey::TransferIntent(subscription_id)` in instance storage
+/// by `do_initiate_transfer`. The receiving address must call
+/// `accept_transfer` before `expires_at`, otherwise the merchant may call
+/// `veto_transfer` (or the entry is left to be overwritten/ignored). Carries no
+/// funds: only the `subscriber` field of the subscription changes on accept.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferIntent {
+    pub subscription_id: u32,
+    pub from: Address,
+    pub to: Address,
+    pub expires_at: u64,
+}
+
+/// Emitted when a subscriber proposes transferring a subscription.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TransferIntentCreatedEvent {
+    pub subscription_id: u32,
+    pub from: Address,
+    pub to: Address,
+    pub expires_at: u64,
+    pub timestamp: u64,
+    pub schema_version: u32,
+}
+
+/// Emitted when a transfer intent is accepted and the subscription's subscriber
+/// is rewritten to the new owner.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SubscriptionTransferredEvent {
+    pub subscription_id: u32,
+    pub from: Address,
+    pub to: Address,
+    pub timestamp: u64,
+    pub schema_version: u32,
+}
+
+/// Emitted when the merchant cancels a pending transfer intent.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct TransferVetoedEvent {
+    pub subscription_id: u32,
+    pub merchant: Address,
+    pub timestamp: u64,
+    pub schema_version: u32,
+}
+
+// ── Merchant sub-accounts ───────────────────────────────────────────────────
+
+/// Emitted when a merchant registers a new labelled sub-account.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SubAccountCreatedEvent {
+    pub merchant: Address,
+    /// Sub-account label, e.g. `"sales"`.
+    pub label: Symbol,
+    pub timestamp: u64,
+    pub schema_version: u32,
+}
+
+/// Emitted when a merchant withdraws from a sub-account's isolated balance.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct SubAccountWithdrawEvent {
+    pub merchant: Address,
+    pub label: Symbol,
+    pub token: Address,
+    pub amount: i128,
+    pub remaining_balance: i128,
+    pub timestamp: u64,
+    pub schema_version: u32,
+}
+
 /// Event emitted when split charge is distributed.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -735,6 +837,25 @@ impl InsufficientBalanceError {
 /// response is received before the window elapses, the dispute may be resolved
 /// in favour of the subscriber.
 pub const DISPUTE_WINDOW_SECS: u64 = 14 * 24 * 60 * 60; // 14 days
+
+/// Hold window (in seconds) applied to a cancellation refund before the
+/// subscriber can claim it.
+///
+/// `cancel_subscription` does not transfer the remaining `prepaid_balance`
+/// directly. It zeroes the field, opens a
+/// [`DataKey::CancellationEscrow`] record with
+/// `released_at = now + CANCELLATION_ESCROW_WINDOW_SECS`, and leaves the tokens
+/// in the contract but still counted in `total_accounted`. During the window the
+/// merchant may dispute the cancellation; once it elapses the subscriber claims
+/// the refund via `withdraw_subscriber_funds` or `claim_cancellation_escrow`.
+///
+/// Value matches the 24-hour hold documented on the `claim_cancellation_escrow`
+/// entrypoint. A withdrawal attempted before `released_at` fails with
+/// [`Error::EscrowNotReleased`].
+///
+/// Note this is the escrow window, not the dispute window: disputes opened
+/// against the escrow are governed by [`DISPUTE_WINDOW_SECS`].
+pub const CANCELLATION_ESCROW_WINDOW_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 /// Lifecycle status of a dispute.
 #[contracttype]
@@ -978,6 +1099,8 @@ pub enum Error {
     OracleDeviationTooHigh = 3009,
     /// Protocol fee exceeds the hard cap (`MAX_PROTOCOL_FEE_BIPS`).
     ProtocolFeeTooHigh = 3010,
+    /// A referral would point an account at itself as its own inviter.
+    SelfReferralNotAllowed = 3011,
 
     // --- State Transition (4000-4099) ---
     /// The requested state transition is not allowed by the state machine.
@@ -1008,6 +1131,9 @@ pub enum Error {
     EmergencyWithdrawInvalidState = 4015,
     /// Merchant vacation mode is active — charges blocked during vacation window.
     VacationActive = 4014,
+    /// Usage billing was requested but the subscription has no `UsageLimits`
+    /// configured.
+    UsageLimitsRequired = 4016,
 
     // --- Accounting (5000-5099) ---
     /// Insufficient balance in the subscription vault.
@@ -1062,6 +1188,9 @@ pub enum Error {
     CouponAlreadyApplied = 6016,
     /// Coupon token does not match the subscription's settlement token.
     CouponTokenMismatch = 6017,
+    /// Too many subscriptions were created by this subscriber within the
+    /// current rate window.
+    SubscriberRateLimited = 6018,
 
     // --- Merchant Config (7000-7099) ---
     /// Fee basis points exceed maximum allowed value.
@@ -1890,6 +2019,42 @@ pub enum RecoveryReason {
     AccidentalTransfer = 4,
 }
 
+/// Identifies which of the two recovery paths released a given amount of funds.
+///
+/// The vault exposes two structurally separate recovery paths (see
+/// `docs/recovery.md`):
+///
+/// * [`RecoveryInitiatorRole::Admin`] — `recover_stranded_funds`, which moves
+///   only *unaccounted* surplus and is gated by `require_admin_auth` plus the
+///   multi-sig/governance approval flow.
+/// * [`RecoveryInitiatorRole::Subscriber`] — `withdraw_subscriber_funds` (and
+///   the emergency-withdraw finalisation that shares its event), which returns
+///   funds still attributed to a specific subscriber and is gated by
+///   `subscriber.require_auth()`.
+///
+/// Both recovery events carry this field so an auditor or off-chain indexer
+/// consuming a single unified "funds were released" stream can tell the two
+/// paths apart from the payload alone, without having to reconstruct roles by
+/// cross-referencing `DataKey::Admin` on-chain.
+///
+/// # Why the value is constant per event
+///
+/// The two paths cannot overlap: `recover_stranded_funds` is only reachable by
+/// the configured admin, while `withdraw_subscriber_funds` requires the
+/// subscription's own subscriber and rejects any other caller with
+/// [`Error::Forbidden`]. The field is therefore pinned per event by
+/// authorization rather than by caller-supplied input — it is emitted by the
+/// contract, never accepted as a parameter, so it cannot be spoofed.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryInitiatorRole {
+    /// Admin-initiated stranded-fund recovery (`recover_stranded_funds`).
+    Admin = 0,
+    /// Subscriber-initiated withdrawal (`withdraw_subscriber_funds`,
+    /// `finalize_emergency_withdraw`).
+    Subscriber = 1,
+}
+
 /// Short topic for [`RecoveryEvent`].
 ///
 /// This fits Soroban's nine-character `symbol_short!` limit and therefore does
@@ -1906,6 +2071,13 @@ pub struct RecoveryEvent {
     pub reason: RecoveryReason,
     pub timestamp: u64,
     pub schema_version: u32,
+    /// Always [`RecoveryInitiatorRole::Admin`] — this event is only emitted by
+    /// the admin-gated `recover_stranded_funds` path.
+    ///
+    /// Paired with `initiator_role` on [`SubscriberWithdrawalEvent`], this lets
+    /// an auditor distinguish the admin recovery path from the subscriber
+    /// withdrawal path when reading a unified stream of recovery events (#437).
+    pub initiator_role: RecoveryInitiatorRole,
 }
 
 /// Legacy short topic for [`SubscriptionCreatedEvent`] emitters.
@@ -2309,6 +2481,13 @@ pub struct SubscriberWithdrawalEvent {
     pub amount: i128,
     pub timestamp: u64,
     pub schema_version: u32,
+    /// Always [`RecoveryInitiatorRole::Subscriber`] — this event is only emitted
+    /// from paths gated by `subscriber.require_auth()`.
+    ///
+    /// Paired with `initiator_role` on [`RecoveryEvent`], this lets an auditor
+    /// distinguish the subscriber withdrawal path from the admin recovery path
+    /// when reading a unified stream of recovery events (#437).
+    pub initiator_role: RecoveryInitiatorRole,
 }
 
 #[contracttype]

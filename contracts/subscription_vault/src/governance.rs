@@ -21,6 +21,19 @@ use soroban_sdk::{Address, Env, Map, String, Symbol, Vec};
 /// Prevents immediate execution in the same ledger and ensures a minimum review window.
 const MIN_TIMELOCK_DELAY: u64 = 2 * 24 * 60 * 60; // 172800 seconds
 
+/// Floor applied to `quorum_bps` when a proposal is executed.
+///
+/// [`do_submit_proposal`] only rejects `quorum_bps > 10_000`, so a proposal can
+/// legally be created with `quorum_bps = 0`. Without a floor that would let a
+/// single guardian vote execute a privileged operation such as admin rotation
+/// or a treasury change. Execution therefore uses
+/// `proposal.quorum_bps.max(MIN_QUORUM_BPS)`, so the effective quorum can never
+/// fall below two thirds of the current total guardian weight.
+///
+/// 6 700 bps (67%) is the quorum used by every worked example in
+/// `docs/governance_proposals.md`.
+const MIN_QUORUM_BPS: u32 = 6_700;
+
 fn proposal_invalidation_cutoff_key(env: &Env) -> Symbol {
     Symbol::new(env, "proposal_cutoff")
 }

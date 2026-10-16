@@ -26,6 +26,7 @@
 //! | `get_plan_max_active_subs` | Per-plan active-subscription limit | ✅ Yes | None |
 //! | `get_merchant_max_subs` | Per-merchant active-subscription limit | ✅ Yes | None |
 //! | `list_subscriptions_by_subscriber` | Paginated subscription IDs | ✅ Yes | None |
+//! | `list_recoverable_subscriptions` | Paginated stranded (cancelled + non-zero prepaid) subscriptions | ✅ Yes | None |
 //! | `get_token_reconciliation` | Accounting totals for a token (no secrets) | ✅ Yes | None — balance totals are public; no admin credential exposed |
 //! | `get_contract_reconciliation_summary` | Multi-token accounting summaries | ✅ Yes | None |
 //! | `generate_reconciliation_proof` | Auditable accounting snapshot | ✅ Yes | None |
@@ -60,7 +61,8 @@
 //! `list_subscriptions_by_subscriber` returns empty results safely because a
 //! missing `SubscriberSubs` index defaults to an empty list, and
 //! `query_prepaid_balances_paginated` returns empty results safely because
-//! `DataKey::NextId` defaults to `0`.
+//! `DataKey::NextId` defaults to `0`. Likewise `list_recoverable_subscriptions`
+//! returns an empty page safely before `init` for the same reason.
 //!
 //! ## Pagination invariants (off-chain / indexers)
 //!
@@ -69,6 +71,11 @@
 //!   `next_start_id` when present (next id to scan). Each call inspects at most
 //!   `MAX_SCAN_DEPTH` index entries — if the scan budget is exhausted before the page is
 //!   full, `next_start_id` is set to the resume point so callers can chain pages.
+//! - **`list_recoverable_subscriptions`**: Full-ID scan (cancelled subscriptions are removed
+//!   from every secondary index). `cursor` is an inclusive lower bound, `None` meaning ID `0`.
+//!   Results are ascending by id. Continue with `next_cursor` when present; when it is `None`
+//!   the scan reached the end of the ID space and enumeration is complete, so an empty page
+//!   with `None` means nothing is stranded. Each call inspects at most `MAX_SCAN_DEPTH` ids.
 //! - **`get_subscriptions_by_merchant`** / **`get_subscriptions_by_token`**: Results follow the
 //!   order of ids in the on-chain index (`MerchantSubs` / `token_subs`), which is insertion
 //!   order (ascending id order for subscriptions created through this contract). `start` is a
@@ -91,6 +98,7 @@
 //! | `get_cap_info` | 1 | Calls `get_subscription` |
 //! | `get_plan_max_active_subs` | 1 | Direct key lookup |
 //! | `list_subscriptions_by_subscriber` | 1 + up to MAX_SCAN_DEPTH | 1 index read + capped scan of that subscriber's ids |
+//! | `list_recoverable_subscriptions` | up to MAX_SCAN_DEPTH | Capped full-ID scan; cancelled subs are absent from every secondary index |
 //!
 //! **Index deserialization note**: `get_subscriptions_by_merchant` and
 //! `get_subscriptions_by_token` read the entire index `Vec<u32>` from a single storage
@@ -519,6 +527,152 @@ pub fn list_subscriptions_by_subscriber(
     Ok(SubscriptionsPage {
         subscription_ids,
         next_start_id,
+    })
+}
+
+/// One entry of a [`RecoverableSubscriptionsPage`] page.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoverableSubscription {
+    pub subscription_id: u32,
+    pub subscriber: Address,
+    pub merchant: Address,
+    pub token: Address,
+    /// Non-zero stranded prepaid balance held on the record.
+    pub prepaid_balance: i128,
+}
+
+/// A page of stranded subscriptions returned by [`list_recoverable_subscriptions`].
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoverableSubscriptionsPage {
+    pub subscriptions: Vec<RecoverableSubscription>,
+    /// ID to resume the scan from on the next call, or `None` once the scan has
+    /// reached the end of the ID space.
+    pub next_cursor: Option<u32>,
+}
+
+/// Lists subscriptions that are stranded in `Cancelled` status with a non-zero
+/// `prepaid_balance`, so admin tooling can surface them without a full chain
+/// scan (issue #438).
+///
+/// # What counts as "stranded"
+///
+/// A subscription is reported when **both** hold:
+///
+/// 1. `status == SubscriptionStatus::Cancelled`, and
+/// 2. `prepaid_balance > 0`.
+///
+/// `Cancelled` is normally terminal and its refund is escrowed rather than left
+/// on the record — `apply_cancellation` zeroes `prepaid_balance` and moves the
+/// amount to `DataKey::CancellationEscrow(subscription_id)`. Rows matching this
+/// predicate therefore indicate that funds were added to, or left on, a
+/// cancelled record outside that path:
+///
+/// * a delegated-payer deposit (`deposit_funds_on_behalf`) that lands after
+///   cancellation, because that path does not gate on `Cancelled`;
+/// * a record restored from a snapshot export whose escrow accounting was not
+///   reproduced by the restore;
+/// * state migrated from an older storage schema.
+///
+/// Surfacing these ids is a **forensic/reporting aid only**. It does not grant
+/// or imply any right to move the funds: `recover_stranded_funds` remains
+/// structurally incapable of touching an accounted balance, and the legitimate
+/// route for a cancelled subscription's money is still the subscriber-authenticated
+/// `withdraw_subscriber_funds`. See `docs/recovery.md` for the full policy.
+///
+/// # Pagination
+///
+/// - `cursor`: inclusive lower bound on the subscription ID to start scanning
+///   from. `None` starts at ID `0`.
+/// - `limit`: how many matching subscriptions to return; must be in
+///   `1..=MAX_QUERY_RESULTS`, otherwise [`Error::InvalidExportLimit`].
+///
+/// Results are ordered by ascending subscription ID. Each call inspects at most
+/// [`MAX_SCAN_DEPTH`] ids; if the budget runs out before `limit` matches are
+/// found, `next_cursor` points at the first unscanned ID so the caller can
+/// resume. When `next_cursor` is `None` the scan has reached the end of the ID
+/// space and enumeration is complete — an empty page with `None` means there is
+/// nothing stranded.
+///
+/// # Complexity
+///
+/// `O(min(MAX_SCAN_DEPTH, remaining ids))` storage reads per call. A full-ID
+/// range scan is structurally required here: `apply_cancellation` removes the
+/// id from `MerchantSubs`, `TokenSubs` and `SubscriberSubs`, so a cancelled
+/// subscription is not reachable through any secondary index.
+///
+/// # Safety
+///
+/// Unauthenticated and unguarded by the emergency stop, like every other view
+/// in this module — the returned records are already public state and expose no
+/// admin secret or timelock.
+pub fn list_recoverable_subscriptions(
+    env: &Env,
+    cursor: Option<u32>,
+    limit: u32,
+) -> Result<RecoverableSubscriptionsPage, Error> {
+    if limit == 0 || limit > MAX_QUERY_RESULTS {
+        return Err(Error::InvalidExportLimit);
+    }
+
+    let next_id: u32 = crate::admin::read_config(env, &DataKey::NextId).unwrap_or(0u32);
+    let start = cursor.unwrap_or(0);
+    if next_id == 0 || start >= next_id {
+        return Ok(RecoverableSubscriptionsPage {
+            subscriptions: Vec::new(env),
+            next_cursor: None,
+        });
+    }
+
+    let mut subscriptions = Vec::new(env);
+    let mut scanned: u32 = 0;
+    let mut cursor_id = start;
+
+    while cursor_id < next_id {
+        if scanned >= MAX_SCAN_DEPTH {
+            break;
+        }
+        scanned += 1;
+
+        if let Some(sub) = env
+            .storage()
+            .persistent()
+            .get::<_, Subscription>(&DataKey::Sub(cursor_id))
+        {
+            if sub.status == SubscriptionStatus::Cancelled && sub.prepaid_balance > 0 {
+                if subscriptions.len() < limit {
+                    subscriptions.push_back(RecoverableSubscription {
+                        subscription_id: cursor_id,
+                        subscriber: sub.subscriber,
+                        merchant: sub.merchant,
+                        token: sub.token,
+                        prepaid_balance: sub.prepaid_balance,
+                    });
+                } else {
+                    // Page is full; resume from this ID on the next call.
+                    return Ok(RecoverableSubscriptionsPage {
+                        subscriptions,
+                        next_cursor: Some(cursor_id),
+                    });
+                }
+            }
+        }
+
+        cursor_id += 1;
+    }
+
+    // Only advertise a resume point when ids remain unscanned. Otherwise the
+    // scan reached `next_id` and enumeration is complete.
+    let next_cursor = if cursor_id < next_id {
+        Some(cursor_id)
+    } else {
+        None
+    };
+
+    Ok(RecoverableSubscriptionsPage {
+        subscriptions,
+        next_cursor,
     })
 }
 

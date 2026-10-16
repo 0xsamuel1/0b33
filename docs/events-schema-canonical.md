@@ -20,17 +20,19 @@ env.events().publish(
 - Topic tuple format: `(Symbol, optional_id)` — enables filtering by event type and resource
 - Data struct: always a named type (never raw tuples) — provides stable schema for indexers
 - Data struct field order is append-only: canonical positional fields stay in place and new fields are appended
-- Every event data struct includes `schema_version: u32`; schema-v3 charge events append `batch_nonce` after it
+- Every event data struct includes `schema_version: u32`; schema-v3 charge events append `batch_nonce` after it, and schema-v4 recovery events append `initiator_role` after that
 - Timestamp: included when useful for ordering/metrics
 - No sensitive data: all event fields are customer-visible
 - One per action: ensures deterministic batch operation ordering
 
 ## Schema Versioning Policy
 
-`EVENT_SCHEMA_VERSION` is currently `3`. Version `1` is the historical event payload layout
+`EVENT_SCHEMA_VERSION` is currently `4`. Version `1` is the historical event payload layout
 without an explicit schema version field. Version `2` appends `schema_version: u32` to every event
 data struct. Version `3` appends `batch_nonce: Option<u64>` to charge-related events and
-`NonceConsumedEvent`, after the existing schema-v2 fields.
+`NonceConsumedEvent`, after the existing schema-v2 fields. Version `4` appends
+`initiator_role: RecoveryInitiatorRole` to `RecoveryEvent` and `SubscriberWithdrawalEvent`,
+after the existing schema-v3 fields.
 
 Indexers should treat the fields listed for each event below as the canonical positional prefix.
 The `schema_version` field is present on every event and is intentionally not repeated in each
@@ -364,6 +366,13 @@ Emitted when a subscriber withdraws funds from a cancelled subscription.
 - `subscription_id`: u32
 - `subscriber`: Address
 - `amount`: i128
+- `initiator_role`: RecoveryInitiatorRole — always `Subscriber` (schema-v4)
+
+**Indexer note:** `initiator_role` is the discriminator that separates the two
+recovery paths when they are consumed as one stream. See
+[`RecoveryEvent`](#recoveryevent) below — `recovery` always reports `Admin`,
+`sub_withdrawn` always reports `Subscriber`. The values are pinned by
+authorization, not by caller input, so an indexer can rely on them.
 
 ---
 
@@ -423,6 +432,21 @@ Emitted when admin recovers stranded funds via `recover_stranded_funds()`.
 - `amount`: i128
 - `reason`: RecoveryReason enum
 - `timestamp`: u64
+- `initiator_role`: RecoveryInitiatorRole — always `Admin` (schema-v4)
+
+**Recovery-path discrimination (schema-v4, #437):** the vault has two
+structurally separate recovery paths, and `initiator_role` labels which one
+released the funds:
+
+| `initiator_role` | Emitted by | Event | Gate |
+|---|---|---|---|
+| `Admin` | `recover_stranded_funds` | `("recovery", admin)` | `require_admin_auth` + multi-sig/governance approval |
+| `Subscriber` | `withdraw_subscriber_funds`, `finalize_emergency_withdraw` | `("sub_withdrawn", subscription_id)` | `subscriber.require_auth()` + subscriber must own the record |
+
+An auditor consuming a unified "funds were released" stream can branch on this
+one field instead of cross-referencing `DataKey::Admin` on-chain. Because the
+paths are gated by different signers, the value cannot be spoofed: it is
+emitted by the contract and never accepted as a parameter.
 
 ---
 

@@ -12,16 +12,17 @@ import argparse
 import re
 import sys
 import pathlib
-from typing import Iterable, List, Seq, Tuple
+from collections.abc import Iterable
+from typing import List, Tuple
 
 
-REPOSITION_ROOT = pathlib.Path(__file__).resolve().parent.parent
+REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-DEFAULT_ADMIN_RS = REPOSITORY_ROOT / "subscription_vault" / "src" / "admin.rs"
+DEFAULT_ADMIN_RS = REPOSITORY_ROOT / "contracts" / "subscription_vault" / "src" / "admin.rs"
 DEFAULT_MATRIX_MD = REPOSITORY_ROOT / "docs" / "admin_authorization_matrix.md"
 
 # Matches an outer `#[contractimpl]` attribute on its own line (optionally with arguments).
-CONTRACTIMPL_RE = re.compile(r"^\s*#\[contractimpl\(?:[^\]]*)?\]")
+CONTRACTIMPL_RE = re.compile(r"^\s*#\[contractimpl(?:\([^\]]*\))?\]")
 
 # Matches a `pub fn name` declaration. Matches the first identifier after `fn`.
 PUB_FN_RE = re.compile(r"^\s*pub\s+fn\s+([A-Za-z_Z9][A-Za-z_0-9]*)\s*(?:<[^>]*>)?\s*\(")
@@ -30,10 +31,10 @@ PUB_FN_RE = re.compile(r"^\s*pub\s+fn\s+([A-Za-z_Z9][A-Za-z_0-9]*)\s*(?:<[^>]*>)
 FN_RE = re.compile(r"^\s*fn\s+([A-Za-z_Z9][A-Za-z_0-9]*)\s*(?:<[^>]*>)?\s*\(")
 
 # Matches an `impl` block opening like `impl SomeType {`.
-IMPL_RE = re.compile(r"^\s*impl\c[^{]*\{")
+IMPL_RE = re.compile(r"^\s*impl\s+[^{]*\{")
 
 # Matches an `impl` block opening with a specific trait, like `impl Trait for Type {`.
-IMPL_FOR_RE = re.compile(r"^\s*impl\c[^{]*\for\b[^{]*\{")
+IMPL_FOR_RE = re.compile(r"^\s*impl\s+[^{]*\bfor\b[^{]*\{")
 
 
 # Entrypoints that are intentionally not part of the admin matrix.
@@ -147,7 +148,9 @@ def extract_entrypoints(content: str) -> List[str]:
 def extract_documented_entrypoints(markup: str) -> Set[str]:
     """Return all `backticked` identifiers that look like function names."""
     candidates: Set[str] = set()
-    for m in re.finditer(r"`([A-Za-z_Z9][A-Za-z_0-9]*)`$|`([A-Za-z_Z9][A-Za-z_0-9]*)\([^`]*\)`"):
+    for m in re.finditer(
+        r"`([A-Za-z_Z9][A-Za-z_0-9]*)`$|`([A-Za-z_Z9][A-Za-z_0-9]*)\([^`]*\)`", markup
+    ):
         name = m.group(1) or m.group(2)
         if name:
             candidates.add(name)

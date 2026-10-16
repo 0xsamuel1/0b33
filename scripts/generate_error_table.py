@@ -111,6 +111,7 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "NotInGracePeriod":               ("Refresh state; a grace-period buyout is only legal when status == GracePeriod.", "—", False),
     "TimelockNotElapsed":             ("Wait until the scheduled effective timestamp; this is a timelock, not an error condition.", "TreasuryChangeScheduledEvent", False),
     "VacationActive":                 ("Retry after the merchant vacation window ends or the merchant calls unpause_merchant.", "MerchantUnpausedEvent", False),
+    "UsageLimitsRequired":            ("Call configure_usage_limits for this subscription before charging usage.", "UsageLimitsConfiguredEvent", False),
     "EmergencyWithdrawInvalidState":  ("Refresh subscription state; emergency withdraw is only valid from the states the policy allows.", "—", False),
     # Accounting
     "InsufficientBalance":            ("Retry only after subscriber deposits funds via deposit_funds.", "FundsDepositedEvent", False),
@@ -123,6 +124,7 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "OraclePriceStale":               ("Retry only after a fresh oracle quote is published.", "OracleChargeResolvedEvent", False),
     "OracleDeviationTooHigh":         ("Treat as terminal; the oracle price deviated past the circuit-breaker threshold. Investigate the price feed before retrying.", "OracleChargeResolvedEvent", False),
     "ProtocolFeeTooHigh":            ("Fix protocol_fee_bps to be at most MAX_PROTOCOL_FEE_BIPS.", "ProtocolFeeUpdatedEvent", False),
+    "SelfReferralNotAllowed":        ("Use a different inviter address; an account cannot refer itself.", "—", False),
     # Limits
     "SubscriptionLimitReached":       ("Treat as terminal capacity failure; no new subscriptions can be created.", "—", False),
     "LifetimeCapReached":             ("Stop charging; surface terminal state to user.", "LifetimeCapReachedEvent", False),
@@ -134,6 +136,7 @@ REMEDIATION: dict[str, tuple[str, str, bool]] = {
     "RateLimitExceeded":              ("Retry after the rate window resets (see configure_usage_limits).", "UsageLimitsConfiguredEvent", False),
     "UsageCapExceeded":               ("Retry only after new billing period begins or cap is raised.", "UsageLimitsConfiguredEvent", False),
     "BurstLimitExceeded":             ("Retry after burst_min_interval_secs elapses.", "UsageLimitsConfiguredEvent", False),
+    "SubscriberRateLimited":         ("Retry after the subscriber creation rate window resets; check get_subscriber_create_window.", "—", False),
     # Merchant config
     "InvalidFeeBips":                 ("Fix fee_bips to be in range [0, 10000].", "MerchantConfigUpdatedEvent", False),
     "InvalidOperations":              ("Fix allowed_operations bitmap to use only valid OP_* bits.", "MerchantConfigUpdatedEvent", False),

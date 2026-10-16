@@ -695,7 +695,8 @@ pub use types::{
     OracleKind, OracleLivenessEvent, OraclePrice, PartialRefundEvent, PayoutSchedule,
     PlanDeprecatedEvent, PlanRegisteredEvent, PlanTemplate, PlanTemplateUpdatedEvent,
     PrepaidQueryRequest, PrepaidQueryResult, ProtocolFeeChargedEvent, RateLimitTrippedEvent,
-    ReconciliationProof, ReconciliationSummaryPage, RecoveryEvent, RecoveryReason,
+    ReconciliationProof, ReconciliationSummaryPage, RecoveryEvent, RecoveryInitiatorRole,
+    RecoveryReason,
     ReferralAttributedEvent, ScheduledPayoutEvent, SchemaMigratedEvent, SignedMetadataPayload,
     SchemaMigrationSummary,
     SnapshotExportedEvent, SnapshotRestoredEvent, SplitChargeEvent, SplitPayees,
@@ -704,9 +705,11 @@ pub use types::{
     SubscriptionAutoPausedEvent, SubscriptionChargeFailedEvent, SubscriptionChargedEvent,
     SubscriptionCreatedEvent, SubscriptionExpiredEvent,
     SubscriptionMigratedEvent, SubscriptionPausedEvent, SubscriptionRecoveryReadyEvent,
-    SubscriptionResumedEvent, SubscriptionStatus, SubscriptionSummary, TagAllowlistUpdatedEvent,
+    SubscriptionResumedEvent, SubscriptionStatus, SubscriptionSummary, SubscriptionTransferredEvent,
+    TagAllowlistUpdatedEvent, TransferIntent, TransferIntentCreatedEvent, TransferVetoedEvent,
     TokenEarnings, TokenLiabilities, TokenReconciliationSnapshot, UsageChargeResult, UsageLimits,
-    UsageState, UsageStatementEvent, DEFAULT_ALLOWED_OPS, DISPUTE_WINDOW_SECS,
+    UsageState, UsageStatementEvent, CANCELLATION_ESCROW_WINDOW_SECS, DEFAULT_ALLOWED_OPS,
+    DISPUTE_WINDOW_SECS,
     EVENT_SCHEMA_VERSION, MAX_MERCHANT_TAGS, MAX_METADATA_KEYS, MAX_METADATA_KEY_LENGTH,
     MAX_METADATA_VALUE_LENGTH, OP_AUTO_RENEWAL, OP_BILLING_PAUSE, OP_CHARGE, OP_REFUND,
     OP_WITHDRAW, SNAPSHOT_FLAG_CLOSED, SNAPSHOT_FLAG_EMPTY, SNAPSHOT_FLAG_INTERVAL_CHARGED,
@@ -2979,6 +2982,45 @@ impl SubscriptionVault {
         limit: u32,
     ) -> Result<crate::queries::SubscriptionsPage, Error> {
         crate::queries::list_subscriptions_by_subscriber(&env, subscriber, start_from_id, limit)
+    }
+
+    /// List stranded subscriptions — those in `Cancelled` status that still hold a
+    /// non-zero `prepaid_balance` — so admin tooling can surface them without a
+    /// full chain scan (issue #438).
+    ///
+    /// This is a reporting/forensics aid only: it confers no right to move funds.
+    /// An accounted balance is still unreachable by `recover_stranded_funds`, and
+    /// the legitimate route for a cancelled subscription's money remains the
+    /// subscriber-authenticated `withdraw_subscriber_funds`.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` — inclusive lower bound on the subscription id to scan from.
+    ///   `None` starts at id `0`. Resume from `next_cursor` on the returned page
+    ///   when it is `Some`.
+    /// * `limit` — maximum entries to return; must be in `1..=queries::MAX_QUERY_RESULTS`.
+    ///
+    /// # Returns
+    ///
+    /// [`queries::RecoverableSubscriptionsPage`] with matching entries in ascending
+    /// id order. `next_cursor == None` means the scan reached the end of the id
+    /// space and enumeration is complete.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidExportLimit`] if `limit` is `0` or exceeds
+    /// `queries::MAX_QUERY_RESULTS`.
+    ///
+    /// # Auth
+    ///
+    /// None — this is an unauthenticated view, safe to call during an active
+    /// emergency stop.
+    pub fn list_recoverable_subscriptions(
+        env: Env,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<queries::RecoverableSubscriptionsPage, Error> {
+        queries::list_recoverable_subscriptions(&env, cursor, limit)
     }
 
     /// Get cap info.
