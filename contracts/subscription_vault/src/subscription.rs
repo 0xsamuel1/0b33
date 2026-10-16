@@ -826,6 +826,7 @@ pub fn do_deposit_funds(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: now,
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -1040,6 +1041,7 @@ pub fn do_grace_buyout(
                 let salt_input = soroban_sdk::Bytes::from_slice(env, &salt_buf);
                 env.crypto().sha256(&salt_input).into()
             },
+            batch_nonce: crate::admin::current_batch_nonce(env),
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
         },
     );
@@ -1091,6 +1093,7 @@ pub fn do_cancel_subscription(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: env.ledger().timestamp(),
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -1237,6 +1240,7 @@ fn apply_cancellation(
             authorizer,
             refund_amount,
             timestamp: env.ledger().timestamp(),
+            batch_nonce: crate::admin::current_batch_nonce(env),
             schema_version: crate::types::EVENT_SCHEMA_VERSION,
         },
     );
@@ -1312,6 +1316,7 @@ pub fn do_schedule_cancel(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: now,
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -1568,6 +1573,7 @@ pub fn do_pause_subscription(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: env.ledger().timestamp(),
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -1651,6 +1657,7 @@ pub fn do_resume_subscription(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: env.ledger().timestamp(),
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -1776,6 +1783,7 @@ fn bulk_pause_one(
             crate::types::SubscriptionExpiredEvent {
                 subscription_id,
                 timestamp: env.ledger().timestamp(),
+                batch_nonce: crate::admin::current_batch_nonce(env),
                 schema_version: crate::types::EVENT_SCHEMA_VERSION,
             },
         );
@@ -1818,6 +1826,7 @@ fn bulk_cancel_one(
             crate::types::SubscriptionExpiredEvent {
                 subscription_id,
                 timestamp: env.ledger().timestamp(),
+                batch_nonce: crate::admin::current_batch_nonce(env),
                 schema_version: crate::types::EVENT_SCHEMA_VERSION,
             },
         );
@@ -2264,6 +2273,7 @@ pub fn do_charge_one_off(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: now,
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -2299,6 +2309,7 @@ pub fn do_charge_one_off(
                         lifetime_cap: cap,
                         lifetime_charged: sub.lifetime_charged,
                         timestamp: now,
+                        batch_nonce: crate::admin::current_batch_nonce(env),
                         schema_version: crate::types::EVENT_SCHEMA_VERSION,
                     },
                 );
@@ -2329,6 +2340,7 @@ pub fn do_charge_one_off(
                     lifetime_cap: cap,
                     lifetime_charged: sub.lifetime_charged,
                     timestamp: now,
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -2403,6 +2415,7 @@ pub fn do_charge_one_off(
                     lifetime_cap: cap,
                     lifetime_charged: sub.lifetime_charged,
                     timestamp: env.ledger().timestamp(),
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -2903,6 +2916,7 @@ pub fn do_deposit_funds_on_behalf(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: now,
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
@@ -3840,6 +3854,7 @@ pub fn do_initiate_transfer(
                 crate::types::SubscriptionExpiredEvent {
                     subscription_id,
                     timestamp: env.ledger().timestamp(),
+                    batch_nonce: crate::admin::current_batch_nonce(env),
                     schema_version: crate::types::EVENT_SCHEMA_VERSION,
                 },
             );
